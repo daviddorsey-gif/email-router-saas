@@ -1,7 +1,7 @@
 'use client'
 
 import { useState } from 'react'
-import { supabase } from '../lib/supabaseClient' // your client is in src/app/lib
+import { supabase } from '../lib/supabaseClient' // client lives in src/app/lib
 
 export default function Login() {
   const [loading, setLoading] = useState(false)
@@ -18,8 +18,9 @@ export default function Login() {
         },
       })
       if (error) setError(error.message)
-    } catch (e: any) {
-      setError(e?.message ?? 'Unknown error')
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : 'Unknown error'
+      setError(msg)
     } finally {
       setLoading(false)
     }
