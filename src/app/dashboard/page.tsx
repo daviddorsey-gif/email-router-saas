@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { supabase } from '../lib/supabaseClient' // keep your existing client
+import { supabase } from '../lib/supabaseClient' // keep this relative path
 
 type Email = {
   id: string
@@ -21,16 +21,16 @@ export default function Dashboard() {
 
   useEffect(() => {
     const init = async () => {
-      // ✅ Require login
+      // ✅ require login
       const { data: sessionData } = await supabase.auth.getSession()
-      const email = sessionData.session?.user?.email ?? null
+      const email = sessionData?.session?.user?.email ?? null
       if (!email) {
         window.location.href = '/login'
         return
       }
       setUserEmail(email)
 
-      // Load emails after auth check
+      // load latest emails
       const { data, error } = await supabase
         .from('emails')
         .select('*')
@@ -41,12 +41,18 @@ export default function Dashboard() {
       else setRows((data ?? []) as Email[])
       setLoading(false)
     }
-    init()
+
+    void init()
   }, [])
 
-  const signOut = async () => {
-    await supabase.auth.signOut()
-    window.location.href = '/login'
+  const refreshRows = async () => {
+    const { data, error } = await supabase
+      .from('emails')
+      .select('*')
+      .order('received_at', { ascending: false })
+      .limit(20)
+
+    if (!error) setRows((data ?? []) as Email[])
   }
 
   const addTestEmail = async () => {
@@ -60,20 +66,33 @@ export default function Dashboard() {
         received_at: new Date().toISOString(),
       },
     ])
-    if (error) alert('Insert failed: ' + error.message)
-    else {
-      // refresh list
-      const { data } = await supabase
-        .from('emails')
-        .select('*')
-        .order('received_at', { ascending: false })
-        .limit(20)
-      setRows((data ?? []) as Email[])
+    if (error) {
+      alert('Insert failed: ' + error.message)
+    } else {
+      await refreshRows()
     }
   }
 
-  if (loading) return <main style={{ padding: '2rem' }}>Loading…</main>
-  if (error)   return <main style={{ padding: '2rem', color: 'tomato' }}>Error: {error}</main>
+  const signOut = async () => {
+    await supabase.auth.signOut()
+    window.location.href = '/login'
+  }
+
+  if (loading) {
+    return (
+      <main style={{ padding: '2rem' }}>
+        Loading…
+      </main>
+    )
+  }
+
+  if (error) {
+    return (
+      <main style={{ padding: '2rem', color: 'tomato' }}>
+        Error: {error}
+      </main>
+    )
+  }
 
   return (
     <main style={{ padding: '2rem' }}>
@@ -81,7 +100,9 @@ export default function Dashboard() {
         <h1 className="text-2xl">Emails (latest)</h1>
         <div className="text-sm">
           <span className="mr-3">Signed in as {userEmail}</span>
-          <button onClick={signOut} className="px-3 py-1 border rounded">Sign out</button>
+          <button onClick={signOut} className="px-3 py-1 border rounded">
+            Sign out
+          </button>
         </div>
       </div>
 
@@ -106,9 +127,11 @@ export default function Dashboard() {
             </tr>
           </thead>
           <tbody>
-            {rows.map(r => (
+            {rows.map((r) => (
               <tr key={r.id} className="border-b">
-                <td className="py-2 pr-4">{new Date(r.received_at).toLocaleString()}</td>
+                <td className="py-2 pr-4">
+                  {new Date(r.received_at).toLocaleString()}
+                </td>
                 <td className="py-2 pr-4">{r.sender ?? '—'}</td>
                 <td className="py-2 pr-4">{r.subject ?? '—'}</td>
                 <td className="py-2 pr-4">{r.category ?? '—'}</td>
