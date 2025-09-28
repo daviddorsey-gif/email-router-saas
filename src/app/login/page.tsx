@@ -1,53 +1,71 @@
-'use client'
+'use client';
 
-import { useEffect, useState } from 'react'
-import { supabase } from '../lib/supabaseClient' // client is in src/app/lib
+import { useEffect, useState } from 'react';
+import { supabase } from '../lib/supabaseClient';
 
-export default function Login() {
-  const [loading, setLoading] = useState(true)
+export default function LoginPage() {
+  const [loading, setLoading] = useState(true);
+  const [msg, setMsg] = useState<string | null>(null);
 
   useEffect(() => {
-    const init = async () => {
-      const { data } = await supabase.auth.getSession()
-      if (data.session) {
-        // already signed in → go to dashboard
-        window.location.href = '/dashboard'
-        return
+    (async () => {
+      const { data: { user }, error } = await supabase.auth.getUser();
+      if (error) console.error('getUser error:', error);
+
+      if (user) {
+        // Already signed in -> go to dashboard
+        window.location.href = '/dashboard';
+        return;
       }
-      setLoading(false)
-    }
-
-    init()
-
-    // redirect on future sign-ins
-    const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => {
-      if (session) window.location.href = '/dashboard'
-    })
-    return () => {
-      sub.subscription.unsubscribe()
-    }
-  }, [])
+      setLoading(false);
+    })();
+  }, []);
 
   const signInWithGoogle = async () => {
-    await supabase.auth.signInWithOAuth({
+    setMsg(null);
+    // Build redirect from the page you’re on (works in local + production)
+    const redirectTo = `${window.location.origin}/login`;
+    const { error } = await supabase.auth.signInWithOAuth({
       provider: 'google',
-      options: { redirectTo: `${window.location.origin}/dashboard` },
-    })
+      options: { redirectTo },
+    });
+    if (error) setMsg(error.message);
+    // Supabase will redirect away; no need to do anything else here
+  };
+
+  if (loading) {
+    return (
+      <main className="p-6">
+        <div className="animate-pulse space-y-3">
+          <div className="h-7 w-48 bg-black/10 dark:bg-white/10 rounded" />
+          <div className="h-24 w-full bg-black/5 dark:bg-white/5 rounded" />
+        </div>
+      </main>
+    );
   }
 
-  if (loading) return <main style={{ padding: '2rem' }}>Loading…</main>
-
   return (
-    <main style={{ padding: '2rem', textAlign: 'center' }}>
-      <h1 className="text-2xl mb-4">Login</h1>
+    <main className="p-6 max-w-lg mx-auto">
+      <h1 className="text-2xl font-semibold mb-2">Sign in</h1>
+      <p className="text-sm text-gray-500 mb-6">
+        Use your Google account to continue.
+      </p>
+
+      {msg && (
+        <div className="mb-3 text-sm px-3 py-2 rounded border border-gray-200 dark:border-white/10 bg-white dark:bg-gray-800">
+          {msg}
+        </div>
+      )}
+
       <button
+        type="button"
         onClick={signInWithGoogle}
-        className="px-4 py-2 rounded border"
+        className="px-4 py-2 rounded border hover:bg-black/5 dark:hover:bg-white/10"
       >
         Continue with Google
       </button>
     </main>
-  )
+  );
 }
 
 
