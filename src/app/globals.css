@@ -24,3 +24,10 @@ body {
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
 }
+/* Improve native select dropdown visibility in dark mode */
+@media (prefers-color-scheme: dark) {
+  select, option {
+    background-color: #1f2937; /* gray-800 */
+    color: #f9fafb;            /* gray-50 */
+  }
+}
