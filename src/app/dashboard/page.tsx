@@ -1,101 +1,171 @@
 'use client';
 
-import { useEffect, useState } from 'react';
-import { supabase } from '../lib/supabaseClient';
+import { useEffect, useMemo, useState } from 'react';
+import supabase from '../lib/supabaseClient';
 
-type Email = {
+type EmailRow = {
   id: string;
+  received_at: string | null;
+  created_at: string | null;
+  from_email: string | null;
   sender: string | null;
   subject: string | null;
   snippet: string | null;
-  category: 'faq' | 'action' | 'review' | null;
-  status: 'open' | 'completed' | 'error';
-  received_at: string;
+  category: string | null;
+  status: 'open' | 'completed' | 'error' | string | null;
+  matched_rule_id: string | null;
+  suggested_answer: string | null;
+  auto_tag: boolean | null;
 };
 
-const STATUS = ['all', 'open', 'completed', 'error'] as const;
-const CATEGORY = ['all', 'faq', 'action', 'review'] as const;
+// Type used specifically when inserting a new email row
+type EmailInsert = {
+  from_email: string;
+  sender: string | null;
+  subject: string | null;
+  snippet: string | null;
+  status: 'open' | 'completed' | 'error';
+  received_at: string;
+  category?: string | null;
+  // You can include optional columns here if you want to seed them
+  // matched_rule_id?: string | null;
+  // suggested_answer?: string | null;
+  // auto_tag?: boolean | null;
+};
 
-export default function Dashboard() {
-  const [emails, setEmails] = useState<Email[]>([]);
-  const [statusFilter, setStatusFilter] =
-    useState<(typeof STATUS)[number]>('all');
-  const [categoryFilter, setCategoryFilter] =
-    useState<(typeof CATEGORY)[number]>('all');
-  const [search, setSearch] = useState('');
-  const [userEmail, setUserEmail] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
+export default function DashboardPage() {
+  const [emails, setEmails] = useState<EmailRow[]>([]);
+  const [loading, setLoading] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
-  const [workingId, setWorkingId] = useState<string | null>(null);
+  const [userEmail, setUserEmail] = useState<string | null>(null);
 
-  // --- Auth bootstrap
+  // UI filters
+  const [filterCategory, setFilterCategory] = useState<'All' | 'faq' | 'other'>('All');
+  const [search, setSearch] = useState('');
+
+  // ---- Load session user
   useEffect(() => {
-    let unsub: (() => void) | undefined;
-
     (async () => {
-      const { data: { user }, error } = await supabase.auth.getUser();
-      if (error) console.error('Auth getUser error:', error);
+      const { data } = await supabase.auth.getUser();
+      const email = data?.user?.email ?? null;
+      setUserEmail(email);
+    })();
+  }, []);
 
-      if (!user) {
-        window.location.href = '/login';
+  // ---- Load emails
+  const loadEmails = async () => {
+    setLoading(true);
+    setMsg(null);
+    try {
+      const { data, error } = await supabase
+        .from('emails')
+        .select(
+          `
+          id, received_at, created_at,
+          from_email, sender,
+          subject, snippet,
+          category, status,
+          matched_rule_id, suggested_answer, auto_tag
+        `
+        )
+        .order('created_at', { ascending: false })
+        .limit(200);
+
+      if (error) throw error;
+      setEmails(data ?? []);
+    } catch (err: any) {
+      console.error('Load failed:', err);
+      setMsg(`Load failed: ${err?.message ?? 'Unknown error'}`);
+      setEmails([]);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadEmails();
+  }, []);
+
+  // ---- Derived counts for pills
+  const counts = useMemo(() => {
+    const all = emails.length;
+    const open = emails.filter((e) => e.status === 'open').length;
+    const completed = emails.filter((e) => e.status === 'completed').length;
+    const error = emails.filter((e) => e.status === 'error').length;
+    return { all, open, completed, error };
+  }, [emails]);
+
+  // ---- Client filtering
+  const filtered = useMemo(() => {
+    return emails.filter((e) => {
+      const matchesCategory =
+        filterCategory === 'All'
+          ? true
+          : filterCategory === 'faq'
+          ? (e.category ?? '').toLowerCase() === 'faq'
+          : (e.category ?? '').toLowerCase() !== 'faq';
+
+      const hay = `${e.subject ?? ''} ${e.snippet ?? ''}`.toLowerCase();
+      const matchesSearch = hay.includes(search.toLowerCase());
+      return matchesCategory && matchesSearch;
+    });
+  }, [emails, filterCategory, search]);
+
+  // ---- Update status helper (complete / reopen)
+  const markStatus = async (id: string, status: 'open' | 'completed') => {
+    try {
+      const { error } = await supabase.from('emails').update({ status }).eq('id', id);
+      if (error) {
+        console.error('Update failed:', error);
+        alert(`Update failed: ${error.message ?? 'Unknown error'}`);
+        return;
+      }
+      setMsg(status === 'completed' ? 'Marked completed' : 'Reopened');
+      await loadEmails();
+    } catch (err) {
+      console.error(err);
+      alert('Unexpected error while updating status.');
+    }
+  };
+
+  // ---- Insert a controllable test email (prompts) — typed payload
+  const addTestEmail = async () => {
+    try {
+      const subject = window.prompt('Subject for the test email?', 'Invoice available');
+      if (subject === null) return;
+
+      const snippet = window.prompt(
+        'Snippet / short body preview?',
+        "Thanks for joining! Here's what to do next..."
+      );
+      if (snippet === null) return;
+
+      const from_email = window.prompt('From email (optional):', 'test@app.com') || 'test@app.com';
+
+      const payload: EmailInsert = {
+        subject,
+        snippet,
+        from_email,
+        sender: from_email,
+        status: 'open',
+        received_at: new Date().toISOString(),
+        // category: 'faq', // set if you want seeded category
+      };
+
+      // Insert one test row (typed) – no TS warning
+      const { error } = await supabase.from('emails').insert<EmailInsert>(payload);
+      if (error) {
+        console.error('insert email error:', error);
+        alert(`Add failed: ${error.message ?? 'Unknown error'}`);
         return;
       }
 
-      setUserEmail(user.email ?? null);
-      await fetchRows();
-      setLoading(false);
-
-      const { data: listener } = supabase.auth.onAuthStateChange(
-        async (_evt, session) => {
-          const email = session?.user?.email ?? null;
-          setUserEmail(email);
-          if (!email) {
-            window.location.href = '/login';
-            return;
-          }
-          await fetchRows();
-        }
-      );
-      unsub = () => listener.subscription.unsubscribe();
-    })();
-
-    return () => {
-      if (unsub) unsub();
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  // Re-fetch when filters/search change
-  useEffect(() => {
-    if (!userEmail) return;
-    fetchRows();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [categoryFilter, search, userEmail]);
-
-  const fetchRows = async () => {
-    setMsg(null);
-
-    let q = supabase
-      .from('emails')
-      .select('*')
-      .order('received_at', { ascending: false })
-      .limit(200);
-
-    // We apply category/search in the DB query; status is handled by pills locally
-    if (categoryFilter !== 'all') q = q.eq('category', categoryFilter);
-    if (search.trim()) {
-      const term = `%${search.trim()}%`;
-      q = q.or(`subject.ilike.${term},snippet.ilike.${term}`);
+      setMsg('Test email added.');
+      await loadEmails();
+    } catch (err) {
+      console.error(err);
+      alert('Unexpected error adding test email.');
     }
-
-    const { data, error } = await q;
-    if (error) {
-      console.error('Fetch error:', error);
-      setMsg(`Fetch failed: ${error.message}`);
-      return;
-    }
-
-    setEmails((data ?? []) as Email[]);
   };
 
   const signOut = async () => {
@@ -103,244 +173,209 @@ export default function Dashboard() {
     window.location.href = '/login';
   };
 
-  // Update a single row’s status
-  const updateStatus = async (id: string, next: Email['status']) => {
-    setMsg(null);
-    setWorkingId(id);
-
-    const { error } = await supabase.from('emails').update({ status: next }).eq('id', id);
-
-    if (error) {
-      console.error('Update error:', error);
-      setMsg(`Update failed: ${error.message}`);
-      setWorkingId(null);
-      return;
-    }
-
-    setEmails(prev => prev.map(e => (e.id === id ? { ...e, status: next } : e)));
-    setMsg(`Marked ${next}`);
-    setWorkingId(null);
-  };
-
-  // Base set that category + search filtered (matches what we fetched)
-  const base = emails;
-
-  // Counts used by pills (status counts within current category+search context)
-  const counts = {
-    all: base.length,
-    open: base.filter(e => e.status === 'open').length,
-    completed: base.filter(e => e.status === 'completed').length,
-    error: base.filter(e => e.status === 'error').length,
-  };
-
-  // Apply status filter for the final list
-  const filteredEmails =
-    statusFilter === 'all' ? base : base.filter(e => e.status === statusFilter);
-
-  if (loading) {
-    return (
-      <main className="p-6">
-        <div className="animate-pulse space-y-3">
-          <div className="h-7 w-48 bg-black/10 dark:bg-white/10 rounded" />
-          <div className="h-24 w-full bg-black/5 dark:bg-white/5 rounded" />
-          <div className="h-24 w-full bg-black/5 dark:bg-white/5 rounded" />
-        </div>
-      </main>
-    );
-  }
-
   return (
-    <main className="p-6 max-w-5xl mx-auto">
-      {/* Header */}
-      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 mb-4">
-        <div>
-          <h1 className="text-2xl font-semibold">Emails</h1>
-          <p className="text-sm text-gray-500">Latest incoming messages</p>
-        </div>
+    <main className="p-6 text-zinc-200">
+      <div className="mb-4 flex items-center justify-between gap-2">
+        <h1 className="text-2xl font-semibold">Emails</h1>
+
         <div className="flex items-center gap-2">
-          <span className="text-sm text-gray-500">
+          <span className="text-sm text-zinc-400">
             {userEmail ? `Signed in as ${userEmail}` : 'Signed in'}
           </span>
           <button
-            type="button"
+            onClick={addTestEmail}
+            className="rounded border border-zinc-700 px-3 py-2 hover:bg-zinc-800"
+          >
+            + Add Test Email
+          </button>
+          <button
             onClick={signOut}
-            className="px-3 py-1.5 border rounded text-sm hover:bg-black/5 dark:hover:bg-white/10"
+            className="rounded border border-zinc-700 px-3 py-2 hover:bg-zinc-800"
           >
             Sign out
           </button>
         </div>
       </div>
 
-      {/* Message */}
-      {msg && (
-        <div className="mb-3 text-sm px-3 py-2 rounded border border-gray-200 dark:border-white/10 bg-white dark:bg-gray-800">
-          {msg}
-        </div>
-      )}
-
-      {/* Controls: Pills (status) + Category + Search + Reset */}
-      <div className="flex flex-col gap-3 mb-5">
-        {/* Status pills */}
-        <div className="flex flex-wrap gap-2">
-          {(STATUS as readonly string[]).map((s) => {
-            const selected = statusFilter === s;
-            return (
-              <button
-                key={s}
-                onClick={() => setStatusFilter(s as (typeof STATUS)[number])}
-                className={`px-3 py-1.5 rounded-full border text-sm transition-colors ${
-                  selected
-                    ? 'bg-blue-600 text-white border-blue-600'
-                    : 'bg-transparent text-gray-200 border-gray-600 hover:bg-white/10'
-                }`}
-                title={`Show ${s}`}
-              >
-                {s[0].toUpperCase() + s.slice(1)}{' '}
-                <span className="opacity-80">({counts[s as keyof typeof counts]})</span>
-              </button>
-            );
-          })}
-        </div>
-
-        {/* Category + Search */}
-        <div className="flex flex-col sm:flex-row gap-3 sm:items-center sm:justify-between">
-          <div className="flex items-center gap-2">
-            <label className="text-sm text-gray-400">Category</label>
-            <select
-              value={categoryFilter}
-              onChange={(e) =>
-                setCategoryFilter(e.target.value as (typeof CATEGORY)[number])
-              }
-              className="border rounded px-2 py-1 text-sm bg-white text-black border-gray-300 dark:bg-gray-800 dark:text-gray-100 dark:border-white/20"
-            >
-              {CATEGORY.map((c) => (
-                <option key={c} value={c}>
-                  {c[0].toUpperCase() + c.slice(1)}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <div className="flex gap-2 items-center">
-            <input
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search subject or snippet…"
-              className="border rounded px-3 py-1.5 text-sm w-full sm:w-80 bg-white text-black border-gray-300 dark:bg-gray-800 dark:text-gray-100 dark:border-white/20"
-            />
-            <button
-              type="button"
-              onClick={() => {
-                setStatusFilter('all');
-                setCategoryFilter('all');
-                setSearch('');
-              }}
-              className="px-3 py-1.5 border rounded text-sm hover:bg-black/5 dark:hover:bg-white/10"
-            >
-              Reset
-            </button>
-          </div>
-        </div>
+      {/* Status pills */}
+      <div className="mb-4 flex flex-wrap items-center gap-2">
+        <Pill label={`All (${counts.all})`} active />
+        <Pill label={`Open (${counts.open})`} />
+        <Pill label={`Completed (${counts.completed})`} />
+        <Pill label={`Error (${counts.error})`} />
       </div>
 
-      {/* Empty state */}
-      {filteredEmails.length === 0 && (
-        <div className="border rounded-xl p-8 text-center text-gray-600">
-          <div className="text-lg mb-2">No emails match your filters</div>
-          <div className="text-sm">Try changing filters or clearing search.</div>
+      {/* Toolbar */}
+      <div className="mb-6 flex flex-wrap items-center gap-2">
+        <div className="flex items-center gap-2">
+          <span className="text-sm text-zinc-400">Category</span>
+          <select
+            value={filterCategory}
+            onChange={(e) => setFilterCategory(e.target.value as any)}
+            className="bg-zinc-900 border border-zinc-700 rounded px-2 py-1 text-sm"
+            title="Filter by category"
+          >
+            <option>All</option>
+            <option value="faq">faq</option>
+            <option value="other">other</option>
+          </select>
         </div>
+
+        <input
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="Search subject or snippet…"
+          className="flex-1 min-w-[280px] rounded border border-zinc-700 bg-zinc-900 px-3 py-2"
+        />
+
+        <button
+          onClick={() => {
+            setFilterCategory('All');
+            setSearch('');
+          }}
+          className="rounded border border-zinc-700 px-3 py-2 hover:bg-zinc-800"
+        >
+          Reset
+        </button>
+      </div>
+
+      {/* Messages */}
+      {msg ? (
+        <div className="mb-4 rounded border border-zinc-700 bg-zinc-900 p-3 text-sm">{msg}</div>
+      ) : null}
+
+      {/* Loading */}
+      {loading && <div className="text-sm text-zinc-400">Loading…</div>}
+
+      {/* Empty */}
+      {!loading && filtered.length === 0 && (
+        <div className="text-sm text-zinc-400">No emails match your filter.</div>
       )}
 
       {/* List */}
-      <div className="grid grid-cols-1 gap-4">
-        {filteredEmails.map((e) => (
-          <article
-            key={e.id}
-            className="rounded-xl border p-4 hover:shadow-sm transition-shadow"
-          >
-            <div className="flex items-start justify-between gap-3">
-              <div className="min-w-0">
-                <div className="flex items-center gap-2 flex-wrap">
-                  <h2 className="font-medium truncate">{e.subject ?? '—'}</h2>
-                  <Badge color={statusColor(e.status)}>{e.status}</Badge>
-                  {e.category && <Badge color="slate">{e.category}</Badge>}
+      <div className="flex flex-col gap-4">
+        {filtered.map((email) => {
+          const when = email.received_at ?? email.created_at ?? null;
+          const whenStr = when ? new Date(when).toLocaleString() : '';
+
+          const from = email.from_email ?? email.sender ?? 'unknown';
+
+          return (
+            <div key={email.id} className="rounded border border-zinc-800 bg-zinc-950 p-4">
+              <div className="flex items-start justify-between gap-4">
+                <div className="min-w-0">
+                  <div className="text-lg font-medium truncate">
+                    {email.subject ?? '(no subject)'}
+                  </div>
+                  <div className="text-sm text-zinc-400">From: {from}</div>
                 </div>
-                <p className="text-sm text-gray-500 mt-1">
-                  From: <span className="font-mono">{e.sender ?? '—'}</span>
-                </p>
+
+                <div className="text-xs text-zinc-400 shrink-0">{whenStr}</div>
               </div>
 
-              <div className="flex flex-col items-end gap-2 whitespace-nowrap">
-                <div className="text-xs text-gray-500">
-                  {new Date(e.received_at).toLocaleString()}
-                </div>
+              <div className="mt-2 text-sm text-zinc-200">{email.snippet ?? ''}</div>
 
-                <div className="flex gap-2">
-                  {e.status !== 'completed' ? (
+              {/* Category / Status badges */}
+              <div className="mt-2 flex items-center gap-2">
+                {email.category ? (
+                  <span className="rounded-full border border-zinc-700 bg-zinc-900 px-2 py-0.5 text-[11px] uppercase tracking-wide">
+                    {email.category}
+                  </span>
+                ) : null}
+                {email.status ? (
+                  <span className="rounded-full border border-zinc-700 bg-zinc-900 px-2 py-0.5 text-[11px] uppercase tracking-wide">
+                    {email.status}
+                  </span>
+                ) : null}
+              </div>
+
+              {/* Suggested Answer card */}
+              {email.suggested_answer ? (
+                <div className="mt-3 rounded border border-zinc-700 bg-zinc-900 p-3">
+                  <div className="text-zinc-200 text-sm whitespace-pre-wrap">
+                    {email.suggested_answer}
+                  </div>
+
+                  <div className="mt-2 flex gap-2">
                     <button
-                      type="button"
-                      disabled={workingId === e.id}
-                      onClick={() => updateStatus(e.id, 'completed')}
-                      className="px-2 py-1 text-xs rounded border hover:bg-black/5 dark:hover:bg-white/10 disabled:opacity-50"
-                      title="Mark as completed"
+                      onClick={async () => {
+                        const { error } = await supabase
+                          .from('emails')
+                          .update({ status: 'completed' })
+                          .eq('id', email.id);
+                        if (error) {
+                          console.error('Update failed:', error);
+                          alert(`Update failed: ${error.message ?? 'Unknown error'}`);
+                          return;
+                        }
+                        setMsg('Marked completed');
+                        await loadEmails();
+                      }}
+                      className="px-3 py-1 text-sm rounded bg-emerald-700 hover:bg-emerald-600"
                     >
-                      {workingId === e.id ? 'Saving…' : '✅ Complete'}
+                      Accept & Complete
                     </button>
-                  ) : (
+
                     <button
-                      type="button"
-                      disabled={workingId === e.id}
-                      onClick={() => updateStatus(e.id, 'open')}
-                      className="px-2 py-1 text-xs rounded border hover:bg-black/5 dark:hover:bg-white/10 disabled:opacity-50"
-                      title="Reopen"
+                      onClick={async () => {
+                        const { error } = await supabase
+                          .from('emails')
+                          .update({
+                            suggested_answer: null,
+                            matched_rule_id: null,
+                            auto_tag: false,
+                          })
+                          .eq('id', email.id);
+                        if (error) {
+                          console.error('Dismiss failed:', error);
+                          alert(`Dismiss failed: ${error.message ?? 'Unknown error'}`);
+                          return;
+                        }
+                        setMsg('Suggestion dismissed');
+                        await loadEmails();
+                      }}
+                      className="px-3 py-1 text-sm rounded border border-zinc-600 hover:bg-zinc-800"
                     >
-                      {workingId === e.id ? 'Saving…' : '↩ Reopen'}
+                      Dismiss
                     </button>
-                  )}
+                  </div>
                 </div>
+              ) : null}
+
+              {/* Actions */}
+              <div className="mt-3 flex items-center gap-2">
+                {email.status === 'open' ? (
+                  <button
+                    onClick={() => markStatus(email.id, 'completed')}
+                    className="rounded border border-zinc-700 bg-zinc-900 px-3 py-2 hover:bg-zinc-800"
+                  >
+                    ✅ Complete
+                  </button>
+                ) : (
+                  <button
+                    onClick={() => markStatus(email.id, 'open')}
+                    className="rounded border border-zinc-700 bg-zinc-900 px-3 py-2 hover:bg-zinc-800"
+                  >
+                    ♻ Reopen
+                  </button>
+                )}
               </div>
             </div>
-
-            {e.snippet && (
-              <p className="text-sm mt-3 text-gray-700 dark:text-gray-300">
-                {e.snippet}
-              </p>
-            )}
-          </article>
-        ))}
+          );
+        })}
       </div>
     </main>
   );
 }
 
-/** Badge pill */
-function Badge({
-  children,
-  color = 'slate',
-}: {
-  children: React.ReactNode;
-  color?: 'slate' | 'green' | 'amber' | 'red';
-}) {
-  const styles: Record<string, string> = {
-    slate:
-      'bg-gray-100 text-gray-700 dark:bg-white/10 dark:text-gray-200 border border-gray-200 dark:border-white/10',
-    green:
-      'bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300 border border-green-200/70 dark:border-green-800/60',
-    amber:
-      'bg-amber-100 text-amber-900 dark:bg-amber-900/30 dark:text-amber-300 border border-amber-200/70 dark:border-amber-800/60',
-    red:
-      'bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-300 border border-red-200/70 dark:border-red-800/60',
-  };
+function Pill({ label, active = false }: { label: string; active?: boolean }) {
   return (
-    <span className={`text-[11px] px-2 py-0.5 rounded-full ${styles[color]}`}>
-      {children}
+    <span
+      className={`rounded-full px-3 py-1 text-sm border ${
+        active ? 'bg-zinc-800' : 'bg-zinc-900'
+      } border-zinc-700`}
+    >
+      {label}
     </span>
   );
-}
-
-function statusColor(status: Email['status']): 'slate' | 'green' | 'amber' | 'red' {
-  if (status === 'completed') return 'green';
-  if (status === 'open') return 'amber';
-  if (status === 'error') return 'red';
-  return 'slate';
 }

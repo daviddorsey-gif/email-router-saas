@@ -1,6 +1,12 @@
-import { createClient } from '@supabase/supabase-js'
+'use client';
+import { createClient } from '@supabase/supabase-js';
 
-const url  = process.env.NEXT_PUBLIC_SUPABASE_URL!
-const anon = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
+const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
 
-export const supabase = createClient(url, anon)
+export const supabase = createClient(supabaseUrl, supabaseKey, {
+  auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true },
+});
+
+// Export both (named + default) so either import style works.
+export default supabase;

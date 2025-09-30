@@ -1,150 +1,103 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
-import { supabase } from '../lib/supabaseClient';
+import { useEffect, useState } from 'react';
+import { useRouter } from 'next/navigation';
+import supabase from '../lib/supabaseClient';
 
-type State = 'checking' | 'ready' | 'redirecting';
+export default function LoginPage() {
+  const router = useRouter();
+  const [checking, setChecking] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
-export default function Login() {
-  const [state, setState] = useState<State>('checking');
-  const [msg, setMsg] = useState<string | null>(null);
-  const timedOut = useRef(false);
-
-  // Helper: session check but never hang forever
-  async function checkSessionWithTimeout(ms = 4000) {
-    setMsg(null);
-    setState('checking');
-
-    const timeout = new Promise<null>((resolve) =>
-      setTimeout(() => {
-        timedOut.current = true;
-        resolve(null);
-      }, ms)
-    );
-
-    try {
-      const sessionPromise = supabase.auth.getSession();
-      const raced = await Promise.race([sessionPromise, timeout]);
-
-      // If timeout fired, just show the login button
-      if (raced === null) {
-        setState('ready');
-        return;
-      }
-
-      const { data, error } = raced as Awaited<
-        ReturnType<typeof supabase.auth.getSession>
-      >;
-
-      if (error) {
-        console.error('getSession error:', error);
-        setMsg(error.message);
-        setState('ready');
-        return;
-      }
-
-      if (data?.session) {
-        window.location.href = '/dashboard';
-      } else {
-        setState('ready');
-      }
-    } catch (e: any) {
-      console.error('getSession threw:', e);
-      setMsg(e?.message ?? 'Session check failed.');
-      setState('ready');
-    }
-  }
-
+  // If already signed in, go straight to dashboard
   useEffect(() => {
-    checkSessionWithTimeout();
+    let cancelled = false;
 
-    // react to auth changes too (e.g., after returning from Google)
-    const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => {
-      if (session?.user) {
-        window.location.href = '/dashboard';
+    (async () => {
+      try {
+        const { data } = await supabase.auth.getSession();
+        const session = data?.session ?? null;
+
+        if (!cancelled) {
+          if (session?.user) {
+            router.replace('/dashboard');
+          } else {
+            setChecking(false);
+          }
+        }
+      } catch (err) {
+        console.error(err);
+        if (!cancelled) {
+          setError('Unable to check session. Please try again.');
+          setChecking(false);
+        }
       }
-    });
-    return () => sub.subscription.unsubscribe();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    })();
 
-  async function signInWithGoogle() {
-    setMsg(null);
-    setState('redirecting');
-    const { error } = await supabase.auth.signInWithOAuth({
-      provider: 'google',
-      options: {
-        // After OAuth completes, Supabase sends you back here.
-        // This page will detect the new session and forward to /dashboard.
-        redirectTo: `${window.location.origin}/login`,
-      },
-    });
-    if (error) {
-      console.error(error);
-      setMsg(error.message);
-      setState('ready');
+    return () => {
+      cancelled = true;
+    };
+  }, [router]);
+
+  const signInWithGoogle = async () => {
+    setError(null);
+    try {
+      // After OAuth, return the user to the dashboard in this same origin
+      const redirectTo = `${window.location.origin}/dashboard`;
+      const { error: oauthError } = await supabase.auth.signInWithOAuth({
+        provider: 'google',
+        options: { redirectTo },
+      });
+      if (oauthError) {
+        setError(oauthError.message ?? 'Sign-in failed.');
+      }
+      // Supabase will redirect; no further action required here.
+    } catch (err) {
+      console.error(err);
+      setError('Unexpected error starting Google sign-in.');
     }
-  }
+  };
 
   return (
-    <main className="min-h-screen flex items-center justify-center p-6">
-      <div className="w-full max-w-md p-6 rounded-lg border border-black/10 dark:border-white/10">
-        <h1 className="text-2xl font-semibold mb-4">Sign in</h1>
+    <main className="min-h-screen grid place-items-center p-6 text-zinc-200">
+      <div className="w-full max-w-md rounded border border-zinc-800 bg-zinc-950 p-6">
+        <h1 className="text-2xl font-semibold">Sign in</h1>
 
-        {/* Message / errors */}
-        {msg && (
-          <div className="mb-3 text-sm px-3 py-2 rounded border border-black/10 dark:border-white/10">
-            {msg}
-          </div>
-        )}
-
-        {/* Checking state (but we’ll still fall back to ready) */}
-        {state === 'checking' && (
+        {checking ? (
+          <p className="mt-4 text-sm text-zinc-400">Checking session…</p>
+        ) : (
           <>
-            <div className="text-sm opacity-70 mb-3">Checking session…</div>
-            {/* Show the button as a fallback too, in case something is slow */}
-            <button
-              onClick={signInWithGoogle}
-              className="w-full px-4 py-2 rounded border hover:bg-black/5 dark:hover:bg-white/10"
-            >
-              Continue with Google
-            </button>
-            <button
-              onClick={() => checkSessionWithTimeout(0)}
-              className="mt-2 w-full text-xs opacity-70 underline"
-            >
-              It’s taking a while — show the sign-in button anyway
-            </button>
-          </>
-        )}
-
-        {state === 'ready' && (
-          <>
-            <button
-              onClick={signInWithGoogle}
-              className="w-full px-4 py-2 rounded border hover:bg-black/5 dark:hover:bg-white/10"
-            >
-              Continue with Google
-            </button>
-            <p className="mt-4 text-xs opacity-70">
-              After signing in, you’ll return here. We’ll detect your session and send you to the
-              dashboard automatically.
+            <p className="mt-4 text-sm text-zinc-400">
+              Use your Google account to continue.
             </p>
-            <button
-              onClick={() => checkSessionWithTimeout()}
-              className="mt-3 text-xs opacity-70 underline"
-            >
-              Re-check session
-            </button>
-          </>
-        )}
 
-        {state === 'redirecting' && (
-          <div className="text-sm opacity-70">Redirecting to Google…</div>
+            {error ? (
+              <div className="mt-3 rounded border border-red-800 bg-red-950 p-3 text-sm text-red-200">
+                {error}
+              </div>
+            ) : null}
+
+            <div className="mt-6">
+              <button
+                onClick={signInWithGoogle}
+                className="w-full rounded border border-zinc-700 bg-zinc-900 px-4 py-2 hover:bg-zinc-800"
+                aria-label="Sign in with Google"
+                title="Sign in with Google"
+              >
+                Continue with Google
+              </button>
+            </div>
+
+            <p className="mt-3 text-xs text-zinc-500">
+              You’ll be redirected to Google and then back to the dashboard.
+            </p>
+          </>
         )}
       </div>
     </main>
   );
 }
+
+
 
 
