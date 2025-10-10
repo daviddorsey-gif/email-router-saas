@@ -1,12 +1,42 @@
-'use client';
-import { createClient } from '@supabase/supabase-js';
+// src/app/lib/supabaseClient.ts
+// Browser-only Supabase client for the app directory.
+// Uses public (anon) key only — safe to ship to the browser.
 
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
+import { createClient, type SupabaseClient } from '@supabase/supabase-js'
 
-export const supabase = createClient(supabaseUrl, supabaseKey, {
-  auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true },
-});
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!
+const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 
-// Export both (named + default) so either import style works.
-export default supabase;
+if (!supabaseUrl || !supabaseAnonKey) {
+  // This helps catch mis-configured .env.local during dev
+  // (Next.js will inline NEXT_PUBLIC_* at build time)
+  // eslint-disable-next-line no-console
+  console.warn(
+    '[supabaseClient] Missing NEXT_PUBLIC_SUPABASE_URL or NEXT_PUBLIC_SUPABASE_ANON_KEY'
+  )
+}
+
+// Ensure a single instance across HMR in dev
+declare global {
+  // eslint-disable-next-line no-var
+  var __supabaseClient__: SupabaseClient | undefined
+}
+
+const client =
+  globalThis.__supabaseClient__ ??
+  createClient(supabaseUrl, supabaseAnonKey, {
+    auth: {
+      // Adjust if you want different storage key/behavior
+      persistSession: true,
+      autoRefreshToken: true,
+      detectSessionInUrl: true,
+    },
+  })
+
+if (process.env.NODE_ENV !== 'production') {
+  globalThis.__supabaseClient__ = client
+}
+
+// Export as both default and named, so existing imports keep working
+export { client as supabase }
+export default client

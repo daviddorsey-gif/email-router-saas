@@ -2,57 +2,61 @@
 import { NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 
-type ReplyPayload = {
-  emailId: string;     // UUID from public.emails.id
-  toAddress: string;   // destination email address
-  body: string;        // reply body text
-  accessToken: string; // Supabase user access token from the client
-};
+const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL!;
+const SUPABASE_SERVICE_ROLE = process.env.SUPABASE_SERVICE_ROLE!;
+
+const admin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE, {
+  auth: { persistSession: false },
+});
 
 export async function POST(req: Request) {
   try {
-    const { emailId, toAddress, body, accessToken } = (await req.json()) as ReplyPayload;
+    const { emailId, to, subject, body } = await req.json();
 
-    if (!emailId || !toAddress || !body || !accessToken) {
+    if (!emailId || !body) {
       return NextResponse.json(
-        { ok: false, error: 'Missing required fields.' },
+        { ok: false, error: 'emailId and body are required' },
         { status: 400 }
       );
     }
 
-    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-    const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-
-    if (!supabaseUrl || !supabaseAnonKey) {
-      return NextResponse.json(
-        { ok: false, error: 'Supabase environment not configured.' },
-        { status: 500 }
-      );
-    }
-
-    // Create a Supabase client that uses the caller's session
-    const supabase = createClient(supabaseUrl, supabaseAnonKey, {
-      global: {
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-        },
-      },
-    });
-
-    // Insert the reply record (RLS allows authenticated users per your policies)
-    const { error } = await supabase.from('email_replies').insert({
+    // 1) Save reply to outbox (provider=log for now)
+    const { error: insertErr } = await admin.from('email_outbox').insert({
       email_id: emailId,
-      to_address: toAddress,
+      to_email: to ?? null,
+      subject: subject ?? null,
       body,
-      // Optional: created_by will be populated by a stricter policy later; not required now
+      status: 'sent',
+      provider: 'log',
     });
 
-    if (error) {
+    if (insertErr) {
       return NextResponse.json(
-        { ok: false, error: `Insert failed: ${error.message}` },
+        { ok: false, error: `Insert failed: ${insertErr.message}` },
         { status: 400 }
       );
     }
+
+    // 2) Mark email as completed
+    const { error: updateErr } = await admin
+      .from('emails')
+      .update({ status: 'completed' })
+      .eq('id', emailId);
+
+    if (updateErr) {
+      return NextResponse.json(
+        { ok: false, error: `Update failed: ${updateErr.message}` },
+        { status: 400 }
+      );
+    }
+
+    // 3) Log it (best-effort)
+    await admin.from('processing_log').insert({
+      action: 'reply',
+      result: 'ok',
+      email_id: emailId,
+      message: 'Reply saved & email marked completed (provider=log)',
+    });
 
     return NextResponse.json({ ok: true });
   } catch (e: any) {
