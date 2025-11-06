@@ -1,435 +1,291 @@
-'use client';
+// src/app/dashboard/page.tsx
+"use client";
 
-import React, { useEffect, useMemo, useState } from 'react';
-// Adjust this path if your client lives elsewhere
-import supabase from '../lib/supabaseClient';
+export const dynamic = "force-dynamic";
 
-//
-// ---------- Types ----------
-//
+import Link from "next/link";
+import { useEffect, useState } from "react";
 
-export type EmailRow = {
-  id: string;
-  subject: string | null;
-  snippet: string | null;
-  from_email: string | null;
-  category: string | null;
-  status: 'open' | 'completed' | 'error' | string;
-  matched_rule_id: string | null;
-  suggested_answer: string | null;
-  auto_processed_at: string | null; // timestamptz
-  created_at: string | null;        // timestamptz
+/* ---------------- Types ---------------- */
+type Metrics = {
+  ok: boolean;
+  emails: { all: number; unmatched: number; matched: number; errors: number };
+  rules: number;
+  ts: string;
 };
 
-type EmailCardProps = {
-  email: EmailRow;
-  onComplete: () => void;
-  onReRun: () => void;
-  onReply: () => void;
+type DbCheck = { ok: boolean; latency_ms?: number; error?: string } | null;
+type Health = {
+  ok: boolean;
+  uptime_ms?: number;
+  checks?: { db?: DbCheck } & Record<string, any>;
 };
 
-//
-// ---------- Small helpers ----------
-//
+/* -------------- UI helpers -------------- */
+const cls = {
+  card:
+    "rounded-2xl border border-zinc-800/80 bg-[#0b111a] p-4 text-zinc-200",
+  big: "text-5xl font-extrabold leading-none tracking-tight",
+  btnWhite:
+    "mt-4 inline-flex w-full items-center justify-center rounded-xl border border-zinc-300/40 bg-white text-zinc-900 px-4 py-2 font-medium hover:bg-zinc-100",
+  tag: "inline-flex items-center rounded-md border border-zinc-700 px-2 py-0.5 text-[11px] text-zinc-300",
+  sideItem:
+    "block rounded-lg px-3 py-2 text-sm text-zinc-300 hover:bg-zinc-900 hover:text-white border border-transparent hover:border-zinc-800",
+};
 
-function fmt(ts: string | null) {
-  if (!ts) return '';
-  try {
-    return new Date(ts).toLocaleString();
-  } catch {
-    return ts;
-  }
-}
-
-//
-// ---------- Card ----------
-//
-
-function EmailCard({ email, onComplete, onReRun, onReply }: EmailCardProps) {
-  // 5b) “Saved at” — prefer auto_processed_at, otherwise created_at to track timing.
-  const savedTs = email.auto_processed_at ?? email.created_at;
-
-  return (
-    <div className="rounded-lg border border-zinc-800 bg-zinc-900/40 p-4">
-      <div className="flex items-center justify-between">
-        <div className="text-zinc-200 font-medium">{email.subject ?? '(no subject)'}</div>
-        <div className="flex items-center gap-2">
-          <span className="text-xs rounded-full px-2 py-0.5 bg-zinc-800 text-zinc-300">
-            {email.status ?? 'open'}
-          </span>
-          {email.auto_processed_at && (
-            <span className="text-xs rounded-full px-2 py-0.5 bg-emerald-900/40 text-emerald-300">
-              auto
-            </span>
-          )}
-        </div>
-      </div>
-
-      <div className="text-zinc-400 text-sm mt-1">From: {email.from_email ?? 'unknown'}</div>
-      <div className="text-zinc-500 text-xs mt-1">{fmt(email.created_at)}</div>
-
-      {email.snippet && (
-        <div className="text-zinc-300 mt-3">{email.snippet}</div>
-      )}
-
-      {email.suggested_answer && (
-        <>
-          <div className="text-xs text-zinc-500 mt-4">SUGGESTED</div>
-          <div className="mt-2 rounded-md bg-zinc-900 border border-zinc-800 p-3 text-zinc-200 whitespace-pre-wrap">
-            {email.suggested_answer}
-          </div>
-        </>
-      )}
-
-      <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
-        <div className="flex flex-wrap gap-2">
-          <button
-            onClick={onComplete}
-            className="px-3 py-1.5 rounded-md bg-emerald-600 hover:bg-emerald-500 text-white text-sm"
-          >
-            ✓ Complete
-          </button>
-          <button
-            onClick={onReRun}
-            className="px-3 py-1.5 rounded-md border border-zinc-700 hover:bg-zinc-800 text-zinc-200 text-sm"
-          >
-            Re-run Match
-          </button>
-          <button
-            onClick={onReply}
-            className="px-3 py-1.5 rounded-md bg-green-600 hover:bg-green-500 text-white text-sm"
-          >
-            Reply
-          </button>
-        </div>
-
-        {/* NEW: Saved at timestamp */}
-        {savedTs && (
-          <div className="text-xs text-zinc-500 ml-auto">
-            Saved at {fmt(savedTs)}
-          </div>
-        )}
-      </div>
-    </div>
+/* ----------- Small components ----------- */
+function StatusChip({ ok }: { ok: boolean }) {
+  return ok ? (
+    <span className="ml-2 rounded-full bg-emerald-900/40 border border-emerald-700 text-emerald-300 text-[11px] px-2 py-0.5">
+      OK
+    </span>
+  ) : (
+    <span className="ml-2 rounded-full bg-red-900/40 border border-red-700 text-red-200 text-[11px] px-2 py-0.5">
+      Issue
+    </span>
   );
 }
 
-//
-// ---------- Page ----------
-//
+function Sidebar() {
+  return (
+    <aside className="hidden lg:block w-64 pr-6">
+      <div className="sticky top-4 space-y-2">
+        <div className="text-xs mb-1 text-zinc-400">NAVIGATION</div>
+        <Link href="/dashboard" className={cls.sideItem}>
+          Dashboard
+        </Link>
+        <Link href="/admin/emails" className={cls.sideItem}>
+          Inbound list
+        </Link>
+        <Link href="/admin/emails?filter=unmatched" className={cls.sideItem}>
+          Unmatched queue
+        </Link>
+        <Link href="/admin/emails?filter=rules" className={cls.sideItem}>
+          Matched rules
+        </Link>
+        <Link href="/admin/logs" className={cls.sideItem}>
+          Processing logs
+        </Link>
 
+        <div className="text-xs mt-4 mb-1 text-zinc-400">SETTINGS</div>
+        <Link href="/settings/rules" className={cls.sideItem}>
+          Rules
+        </Link>
+        <Link href="/settings/mailboxes" className={cls.sideItem}>
+          Mailboxes
+        </Link>
+        <Link href="/api/health" className={cls.sideItem}>
+          API health (JSON)
+        </Link>
+      </div>
+    </aside>
+  );
+}
+
+/* ----------------- Page ----------------- */
 export default function DashboardPage() {
-  const [emails, setEmails] = useState<EmailRow[]>([]);
-  const [loading, setLoading] = useState(false);
-
-  // counters
-  const [openCount, setOpenCount] = useState(0);
-  const [completedCount, setCompletedCount] = useState(0);
-  const [errorCount, setErrorCount] = useState(0);
-
-  // top summary
-  const [autoToday, setAutoToday] = useState(0);
-  const [unmatched, setUnmatched] = useState(0);
-  const [errTop, setErrTop] = useState(0);
-
-  // filters/search
-  const [tab, setTab] = useState<'open' | 'completed' | 'error' | 'all'>('open');
-  const [category, setCategory] = useState<'All' | 'faq'>('All');
-  const [query, setQuery] = useState('');
-
-  // session banner
-  const [userEmail, setUserEmail] = useState<string>('');
+  const [metrics, setMetrics] = useState<Metrics | null>(null);
+  const [health, setHealth] = useState<Health | null>(null);
+  const [fetchErr, setFetchErr] = useState<string>("");
 
   useEffect(() => {
+    let alive = true;
     (async () => {
-      const { data } = await supabase.auth.getSession();
-      setUserEmail(data?.session?.user?.email ?? '');
+      try {
+        const r = await fetch("/api/admin/metrics", { cache: "no-store" });
+        if (!r.ok) throw new Error(`metrics HTTP ${r.status}`);
+        const m = (await r.json()) as Metrics;
+
+        const hr = await fetch("/api/health", { cache: "no-store" });
+        const h = (await hr.json()) as Health;
+
+        if (alive) {
+          setMetrics(m);
+          setHealth(h);
+        }
+      } catch (e: any) {
+        if (alive) setFetchErr(String(e?.message || e));
+      }
     })();
+    return () => {
+      alive = false;
+    };
   }, []);
 
-  useEffect(() => {
-    void loadAll();
-  }, [tab, category, query]);
+  // Defensive extraction so we never render non-strings/objects directly
+  const db: DbCheck =
+    (health && health.checks && (health.checks as any).db
+      ? (health.checks as any).db
+      : null) ?? null;
 
-  async function loadAll() {
-    setLoading(true);
-    try {
-      await Promise.all([loadEmails(), loadCounts(), loadTopSummary()]);
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  // ---- load main list
-  async function loadEmails() {
-    let q = supabase
-      .from('emails')
-      .select(
-        `id, subject, snippet, from_email, category, status, matched_rule_id, suggested_answer, auto_processed_at, created_at`
-      )
-      .order('created_at', { ascending: false })
-      .limit(100);
-
-    if (tab !== 'all') q = q.eq('status', tab);
-    if (category !== 'All') q = q.eq('category', category.toLowerCase());
-    if (query.trim()) {
-      q = q.or(
-        `subject.ilike.%${query.trim()}%,snippet.ilike.%${query.trim()}%`
-      );
-    }
-
-    const { data, error } = await q;
-    if (error) {
-      alert(`Load failed: ${error.message}`);
-      setEmails([]);
-      return;
-    }
-    setEmails((data ?? []) as EmailRow[]);
-  }
-
-  // ---- bottom pills counts
-  async function loadCounts() {
-    // open
-    {
-      const { count } = await supabase
-        .from('emails')
-        .select('*', { count: 'exact', head: true })
-        .eq('status', 'open');
-      setOpenCount(count ?? 0);
-    }
-    // completed
-    {
-      const { count } = await supabase
-        .from('emails')
-        .select('*', { count: 'exact', head: true })
-        .eq('status', 'completed');
-      setCompletedCount(count ?? 0);
-    }
-    // error
-    {
-      const { count } = await supabase
-        .from('emails')
-        .select('*', { count: 'exact', head: true })
-        .eq('status', 'error');
-      setErrorCount(count ?? 0);
-    }
-  }
-
-  // ---- top summary counters
-  async function loadTopSummary() {
-    // Auto (today): auto_processed_at is today
-    {
-      const start = new Date();
-      start.setHours(0, 0, 0, 0);
-      const { count } = await supabase
-        .from('emails')
-        .select('*', { count: 'exact', head: true })
-        .not('auto_processed_at', 'is', null)
-        .gte('auto_processed_at', start.toISOString());
-      setAutoToday(count ?? 0);
-    }
-
-    // Unmatched: status=open AND matched_rule_id is null
-    {
-      const { count } = await supabase
-        .from('emails')
-        .select('*', { count: 'exact', head: true })
-        .eq('status', 'open')
-        .is('matched_rule_id', null);
-      setUnmatched(count ?? 0);
-    }
-
-    // Errors (same as errorCount)
-    {
-      const { count } = await supabase
-        .from('emails')
-        .select('*', { count: 'exact', head: true })
-        .eq('status', 'error');
-      setErrTop(count ?? 0);
-    }
-  }
-
-  // ---- actions
-  async function markStatus(row: EmailRow, status: 'completed' | 'error' | 'open') {
-    const { error } = await supabase.from('emails').update({ status }).eq('id', row.id);
-    if (error) {
-      alert(`Update failed: ${error.message}`);
-      return;
-    }
-    await loadAll();
-  }
-
-  async function reRunMatch(row: EmailRow) {
-    // If you have an RPC, call it here; otherwise clear matched_rule_id to let triggers reconsider.
-    const { error } = await supabase
-      .from('emails')
-      .update({ matched_rule_id: null })
-      .eq('id', row.id);
-    if (error) {
-      alert(`Re-run failed: ${error.message}`);
-      return;
-    }
-    await loadAll();
-  }
-
-  function reply(row: EmailRow) {
-    window.location.href = `/dashboard/reply?emailId=${encodeURIComponent(row.id)}`;
-  }
-
-  // ---- Add Test Email (prompt-based; no hard-coding)
-  async function addTestEmail() {
-    const subject = window.prompt('Subject?', 'Need refund');
-    if (subject == null) return;
-    const snippet = window.prompt('Snippet?', 'Can I get a refund for a missed class?') ?? '';
-    const fromEmail = window.prompt('From email?', 'test@app.com') ?? 'test@app.com';
-
-    const payload = {
-      subject,
-      snippet,
-      from_email: fromEmail,
-      status: 'open' as const,
-      category: 'faq' as const,
-    };
-
-    const { error } = await supabase.from('emails').insert(payload);
-    if (error) {
-      alert(`Insert failed: ${error.message}`);
-      return;
-    }
-    await loadAll();
-  }
-
-  // ---- final list
-  const filtered = useMemo(() => emails, [emails]);
+  const dbOk = !!(db && db.ok);
+  const dbLatency =
+    db && typeof db.latency_ms === "number" ? `${db.latency_ms}ms` : "—";
+  const dbStatusText = db ? (db.ok ? "Connected" : "Issue") : "—";
 
   return (
-    <div className="max-w-5xl mx-auto px-4 py-6">
-      <div className="flex items-center justify-between mb-6">
-        <h1 className="text-xl font-semibold text-zinc-100">Emails</h1>
-        <div className="flex items-center gap-3">
-          <div className="text-zinc-400">
-            Signed in as: <span className="text-zinc-200">{userEmail || '...'}</span>
+    <main className="p-6 max-w-7xl mx-auto flex">
+      <Sidebar />
+
+      <section className="flex-1">
+        <div className="mb-2 flex items-center justify-between">
+          <h1 className="text-2xl font-semibold">Email Router · Control Panel</h1>
+          <div className="text-xs text-zinc-400">
+            One-stop view: inbound, unmatched, alerts, system health.
           </div>
-          <button
-            onClick={addTestEmail}
-            className="px-3 py-1.5 rounded-md bg-blue-600 hover:bg-blue-500 text-white text-sm"
-          >
-            + Add Test Email
-          </button>
-          <button
-            onClick={() => supabase.auth.signOut().then(() => (window.location.href = '/login'))}
-            className="px-3 py-1.5 rounded-md border border-zinc-700 hover:bg-zinc-800 text-zinc-200 text-sm"
-          >
-            Sign out
-          </button>
         </div>
-      </div>
 
-      {/* Top summary */}
-      <div className="flex flex-wrap gap-3 mb-4">
-        <Pill label="Auto (today)" count={autoToday} color="emerald" />
-        <Pill label="Unmatched" count={unmatched} color="amber" />
-        <Pill label="Errors" count={errTop} color="rose" />
-      </div>
+        {/* HYDRATION-SAFE badges row */}
+        <div className="flex gap-2 mb-4" suppressHydrationWarning>
+          <span className={cls.tag}>Auto (today)</span>
 
-      {/* Filters */}
-      <div className="flex flex-wrap items-center gap-3 mb-5">
-        <Tab active={tab === 'open'} onClick={() => setTab('open')} label="Open" count={openCount} />
-        <Tab
-          active={tab === 'completed'}
-          onClick={() => setTab('completed')}
-          label="Completed"
-          count={completedCount}
-        />
-        <Tab active={tab === 'error'} onClick={() => setTab('error')} label="Error" count={errorCount} />
-        <Tab active={tab === 'all'} onClick={() => setTab('all')} label="All" count={openCount + completedCount + errorCount} />
+          <span className={cls.tag}>
+            Unmatched{" "}
+            <span className="ml-1 text-amber-300">
+              {metrics?.emails.unmatched ?? "—"}
+            </span>
+          </span>
 
-        <select
-          value={category}
-          onChange={(e) => setCategory(e.target.value as 'All' | 'faq')}
-          className="ml-2 rounded-md bg-zinc-900 border border-zinc-800 text-zinc-200 text-sm px-2 py-1"
-        >
-          <option>All</option>
-          <option>faq</option>
-        </select>
-
-        <div className="flex items-center gap-2 ml-auto">
-          <input
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search subject or snippet..."
-            className="w-72 rounded-md bg-zinc-900 border border-zinc-800 text-zinc-200 text-sm px-3 py-1.5"
-          />
-          <button
-            onClick={() => void loadAll()}
-            className="px-3 py-1.5 rounded-md border border-zinc-700 hover:bg-zinc-800 text-zinc-200 text-sm"
-          >
-            Search
-          </button>
+          <span className={cls.tag}>
+            Errors{" "}
+            <span className="ml-1 text-red-300">
+              {metrics?.emails.errors ?? "—"}
+            </span>
+          </span>
         </div>
-      </div>
 
-      {/* List */}
-      {loading && <div className="text-zinc-400 text-sm mb-3">Loading…</div>}
-
-      <div className="space-y-4">
-        {filtered.map((e: EmailRow) => (
-          <EmailCard
-            key={e.id}
-            email={e}
-            onComplete={() => markStatus(e, 'completed')}
-            onReRun={() => reRunMatch(e)}
-            onReply={() => reply(e)}
-          />
-        ))}
-        {!loading && filtered.length === 0 && (
-          <div className="text-zinc-500 text-sm">No emails match your filter.</div>
+        {fetchErr && (
+          <div className="text-sm text-amber-300 mb-4">
+            Fetch issue: {fetchErr}
+          </div>
         )}
-      </div>
-    </div>
-  );
-}
 
-//
-// ---------- Tiny UI bits ----------
-//
+        {/* SYSTEM STATUS */}
+        <div className="text-sm text-zinc-400 mb-2">SYSTEM STATUS</div>
+        <div className="grid gap-4 md:grid-cols-2 mb-6">
+          <div className={cls.card}>
+            <div className="flex items-center justify-between">
+              <div className="text-sm font-medium">
+                API HEALTH
+                <StatusChip ok={!!health?.ok} />
+              </div>
+              <Link
+                href="/api/health"
+                className="rounded-xl border border-zinc-700 px-3 py-1 text-xs text-zinc-300 hover:bg-zinc-900"
+              >
+                View
+              </Link>
+            </div>
+            <div className="text-xs mt-2 text-zinc-400">
+              GET <span className="text-zinc-300">/api/health</span> • last check: just
+              now
+            </div>
+            <div className="mt-2 text-xs text-zinc-400">
+              Uptime:{" "}
+              <span className="text-zinc-200">
+                {health?.uptime_ms ? `${Math.round(health.uptime_ms / 1000)}s` : "—"}
+              </span>
+            </div>
+          </div>
 
-function Pill({ label, count, color }: { label: string; count: number; color: 'emerald' | 'amber' | 'rose' }) {
-  const base = 'inline-flex items-center gap-2 rounded-full px-3 py-1 text-sm';
-  const palette: Record<'emerald' | 'amber' | 'rose', string> = {
-    emerald: 'bg-emerald-900/40 text-emerald-300',
-    amber: 'bg-amber-900/40 text-amber-300',
-    rose: 'bg-rose-900/40 text-rose-300',
-  };
-  return (
-    <div className={`${base} ${palette[color]}`}>
-      <span>{label}</span>
-      <span className="rounded-full px-1.5 bg-black/30">{count}</span>
-    </div>
-  );
-}
+          <div className={cls.card}>
+            <div className="flex items-center justify-between">
+              <div className="text-sm font-medium">
+                DB CONNECTIVITY
+                <StatusChip ok={dbOk} />
+              </div>
+              <Link
+                href="/admin/logs"
+                className="rounded-xl border border-zinc-700 px-3 py-1 text-xs text-zinc-300 hover:bg-zinc-900"
+              >
+                Open
+              </Link>
+            </div>
+            <div className="text-xs mt-2 text-zinc-400">
+              Supabase • public • status:{" "}
+              <span className="text-zinc-200">{dbStatusText}</span>
+            </div>
+            <div className="text-xs mt-1 text-zinc-400">
+              Latency: <span className="text-zinc-200">{dbLatency}</span>
+            </div>
+            {db && (db as any).error && (
+              <div className="text-xs mt-1 text-red-300">
+                Error: {(db as any).error}
+              </div>
+            )}
+          </div>
+        </div>
 
-function Tab({
-  label,
-  count,
-  active,
-  onClick,
-}: {
-  label: string;
-  count: number;
-  active: boolean;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      onClick={onClick}
-      className={`px-3 py-1.5 rounded-md text-sm ${
-        active
-          ? 'bg-blue-600 text-white'
-          : 'bg-zinc-900 text-zinc-200 border border-zinc-800 hover:bg-zinc-800'
-      }`}
-    >
-      {label} ({count})
-    </button>
+        {/* OPERATIONS & COMMUNICATIONS */}
+        <div className="text-sm text-zinc-400 mb-2">OPERATIONS & COMMUNICATIONS</div>
+        <div className="grid gap-4 md:grid-cols-2 mb-8">
+          <div className={cls.card}>
+            <div className="text-xs opacity-70 mb-2">INBOUND EMAILS</div>
+            <div className={cls.big}>{metrics?.emails.all ?? "—"}</div>
+            <div className="text-sm opacity-70 mt-1">
+              From <span className="text-zinc-300">/api/inbound/postmark</span>
+            </div>
+            <Link href="/admin/emails" className={cls.btnWhite}>
+              View inbound
+            </Link>
+          </div>
+
+          <div className={cls.card}>
+            <div className="text-xs opacity-70 mb-2">UNMATCHED QUEUE</div>
+            <div className={cls.big}>{metrics?.emails.unmatched ?? "—"}</div>
+            <div className="text-sm opacity-70 mt-1">
+              Items that did not match FAQ rules.
+            </div>
+            <Link href="/admin/emails?filter=unmatched" className={cls.btnWhite}>
+              Open unmatched
+            </Link>
+          </div>
+
+          <div className={cls.card}>
+            <div className="text-xs opacity-70 mb-2">MATCHED RULES</div>
+            <div className={cls.big}>{metrics?.emails.matched ?? "—"}</div>
+            <div className="text-sm opacity-70 mt-1">
+              Messages matched by active rules.
+            </div>
+            <Link href="/admin/emails?filter=rules" className={cls.btnWhite}>
+              View matched
+            </Link>
+          </div>
+
+          <div className={cls.card}>
+            <div className="text-xs opacity-70 mb-2">ERRORS</div>
+            <div className={cls.big}>{metrics?.emails.errors ?? "—"}</div>
+            <div className="text-sm opacity-70 mt-1">Processing failures.</div>
+            <Link href="/admin/logs" className={cls.btnWhite}>
+              Review errors
+            </Link>
+          </div>
+        </div>
+
+        {/* RULES & SETTINGS */}
+        <div className="text-sm text-zinc-400 mb-2">RULES & SETTINGS</div>
+        <div className="grid gap-4 md:grid-cols-2">
+          <div className={cls.card}>
+            <div className="text-xs opacity-70 mb-2">RULES</div>
+            <div className={cls.big}>{metrics?.rules ?? "—"}</div>
+            <div className="text-sm opacity-70 mt-1">Active matching rules.</div>
+            <Link href="/settings/rules" className={cls.btnWhite}>
+              Manage rules
+            </Link>
+          </div>
+
+          <div className={cls.card}>
+            <div className="text-xs opacity-70 mb-2">MAILBOXES</div>
+            <div className="text-lg font-semibold">Manage Mailboxes</div>
+            <div className="text-sm opacity-70 mt-1">
+              Add or disable business mailboxes used for routing.
+            </div>
+            <Link href="/settings/mailboxes" className={cls.btnWhite}>
+              Open settings
+            </Link>
+          </div>
+        </div>
+      </section>
+    </main>
   );
 }

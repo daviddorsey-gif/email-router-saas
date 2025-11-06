@@ -39,3 +39,12 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+# keep example env tracked
+!.env.example
+
+# VS Code (keep only curated extensions file if you add it later)
+.vscode/*
+!.vscode/extensions.json
+
+# Supabase temp
+supabase/.temp/*
